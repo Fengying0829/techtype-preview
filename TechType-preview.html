@@ -711,12 +711,40 @@
     #resultRadar { width: min(420px, 100%); max-width: 100%; }
 
     .ai-text {
+      display: grid;
+      gap: 12px;
       color: #374057;
       font-size: 16px;
       line-height: 1.9;
       font-weight: 650;
-      white-space: pre-line;
     }
+
+    .ai-block {
+      padding: 16px;
+      border-radius: 20px;
+      border: 1px solid rgba(26,32,51,.08);
+      box-shadow: 0 12px 28px rgba(62,73,122,.07);
+    }
+
+    .ai-block h4 {
+      margin: 0 0 8px;
+      font-size: 16px;
+      line-height: 1.35;
+      color: #202943;
+    }
+
+    .ai-block p {
+      margin: 0;
+      line-height: 1.8;
+      font-weight: 650;
+    }
+
+    .ai-purple { background: linear-gradient(135deg, rgba(128,103,255,.16), rgba(255,107,131,.13)); }
+    .ai-green { background: linear-gradient(135deg, rgba(32,217,178,.18), rgba(200,242,90,.16)); }
+    .ai-blue { background: linear-gradient(135deg, rgba(53,183,255,.18), rgba(128,103,255,.12)); }
+    .ai-yellow { background: linear-gradient(135deg, rgba(255,209,102,.24), rgba(255,107,131,.11)); }
+    .ai-coral { background: linear-gradient(135deg, rgba(255,107,131,.18), rgba(255,209,102,.12)); }
+    .ai-mint { background: linear-gradient(135deg, rgba(200,242,90,.18), rgba(32,217,178,.14)); }
 
     .tag-row {
       display: flex;
@@ -944,6 +972,10 @@
   <div class="toast" id="toast">已复制分享文案</div>
 
   <script>
+    // Fill this with your deployed Cloudflare Worker URL, not your DeepSeek API Key.
+    // Example: const AI_FEEDBACK_API = "https://techtype-ai-feedback.your-name.workers.dev";
+    const AI_FEEDBACK_API = "";
+
     const letters = ["A", "B", "C", "D"];
     const q = (text, dim, opts) => ({ text, dim, options: opts });
     const o = (text, side, points, radar, radarPoints) => ({ text, side, points, radar, radarPoints });
@@ -1312,7 +1344,7 @@
       }).sort((a, b) => b.score - a.score).slice(0, 3);
     }
 
-    function renderResult(result) {
+    async function renderResult(result) {
       const [name, tagline, traits] = result.profile;
       const topAxis = Object.entries(result.radar).sort((a, b) => b[1] - a[1])[0][0];
       document.getElementById("resultCode").textContent = result.code;
@@ -1330,9 +1362,104 @@
         .sort((a, b) => b[1] - a[1])
         .map(([axis, score]) => `<span class="tag">${axis} ${score}</span>`)
         .join("");
-      const comment = makeComment(result, name, traits);
-      document.getElementById("aiText").textContent = comment;
-      document.getElementById("commentLength").textContent = `${comment.length} 字`;
+      renderAIBlocks(buildFallbackAIBlocks(result, name, traits), "本地兜底生成中");
+
+      try {
+        const aiData = await generateAIComment(result);
+        renderAIBlocks(aiData, "DeepSeek 生成");
+      } catch (error) {
+        renderAIBlocks(buildFallbackAIBlocks(result, name, traits), "本地兜底");
+      }
+    }
+
+    async function generateAIComment(result) {
+      if (!AI_FEEDBACK_API) {
+        throw new Error("AI_FEEDBACK_API is not configured");
+      }
+
+      const payload = {
+        personalityCode: result.code,
+        personalityName: result.profile[0],
+        tagline: result.profile[1],
+        traits: result.profile[2],
+        dimensionScores: result.dims,
+        selectedDimensions: result.selected,
+        radarScores: result.radar,
+        jobRecommendations: result.recommendations,
+        confidence: result.confidence
+      };
+
+      const response = await fetch(AI_FEEDBACK_API, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(payload)
+      });
+
+      if (!response.ok) {
+        throw new Error("AI feedback request failed");
+      }
+
+      return normalizeAIBlocks(await response.json());
+    }
+
+    function normalizeAIBlocks(data) {
+      return {
+        summary: data.summary || "这是一份更适合作为行动地图而不是命运标签的科技人格结果。",
+        strength: data.strength || data.coreStrength || "",
+        difference: data.difference || data.uniqueness || "",
+        jobs: data.jobs || data.jobExplanation || "",
+        blindspot: data.blindspot || data.blindSpot || "",
+        actions: data.actions || data.actionPlan || ""
+      };
+    }
+
+    function buildFallbackAIBlocks(result, name, traits) {
+      const topAxes = Object.entries(result.radar).sort((a, b) => b[1] - a[1]);
+      const high1 = topAxes[0];
+      const high2 = topAxes[1];
+      const low = topAxes[topAxes.length - 1];
+      const topJob = result.recommendations[0];
+      const secondJob = result.recommendations[1];
+      const thirdJob = result.recommendations[2];
+      return {
+        summary: `你这次呈现出的 TechType 是「${name} ${result.code}」，更像一张科技职场里的行动地图。`,
+        strength: `你的核心优势集中在「${high1[0]}」和「${high2[0]}」。${high1[0]} 得分 ${high1[1]}，说明你在相关场景中已经形成比较稳定的工作偏好；${high2[0]} 得分 ${high2[1]}，说明你不只是有想法，也能把它转化成别人看得懂、接得住的动作。`,
+        difference: `结合四维倾向 ${result.selected.join("/")} 来看，你和别人不一样的地方在于：你不是单纯靠热情推进，也不是只停留在分析里，而是会把「${traits}」变成一种相对清晰的工作打法。`,
+        jobs: `岗位上，系统给你的 Top 3 是「${topJob.name}」「${secondJob.name}」和「${thirdJob.name}」。其中 ${topJob.name} 的匹配分是 ${topJob.score}，属于${topJob.level}，它需要 ${topJob.axes.join("、")} 的组合，和你本次雷达图中比较亮的部分相互呼应。`,
+        blindspot: `可能的盲区在「${low[0]}」，当前得分 ${low[1]}。这不代表你不具备这项能力，只说明它在这次答题画像里没有那么突出。进入高压、模糊或多人协作场景时，可以主动检查是否忽略了人、数据、边界或长期影响。`,
+        actions: `未来 30 天建议：第一周记录你在真实项目中最自然承担的角色；第二周选择一个和「${low[0]}」相关的小任务练习；第三周把岗位 Top 3 拿去和同事朋友讨论；第四周选一个最感兴趣的方向做作品或复盘。`
+      };
+    }
+
+    function renderAIBlocks(data, sourceLabel = "AI 生成") {
+      const normalized = normalizeAIBlocks(data);
+      const blocks = [
+        ["一句话点评", normalized.summary, "ai-purple"],
+        ["核心优势", normalized.strength, "ai-green"],
+        ["不同之处", normalized.difference, "ai-blue"],
+        ["岗位解释", normalized.jobs, "ai-yellow"],
+        ["可能盲区", normalized.blindspot, "ai-coral"],
+        ["30 天建议", normalized.actions, "ai-mint"]
+      ];
+
+      document.getElementById("aiText").innerHTML = blocks.map(([title, text, cls]) => `
+        <section class="ai-block ${cls}">
+          <h4>${escapeHTML(title)}</h4>
+          <p>${escapeHTML(text || "正在整理这一部分的表达。")}</p>
+        </section>
+      `).join("");
+
+      const totalLength = blocks.map(item => item[1] || "").join("").length;
+      document.getElementById("commentLength").textContent = `${sourceLabel} · ${totalLength} 字`;
+    }
+
+    function escapeHTML(value) {
+      return String(value)
+        .replaceAll("&", "&amp;")
+        .replaceAll("<", "&lt;")
+        .replaceAll(">", "&gt;")
+        .replaceAll('"', "&quot;")
+        .replaceAll("'", "&#039;");
     }
 
     function renderDimensionBars(result) {
